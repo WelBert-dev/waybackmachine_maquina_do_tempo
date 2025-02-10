@@ -5,7 +5,7 @@
 # Cores para saída
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-NC='\033[0m' # Sem cor
+NC='\033[0m'  # Sem cor
 
 echo "\n\n\n${GREEN}Iniciando configuração do ArchiveBox...${NC}"
 
@@ -29,47 +29,36 @@ chmod 777 archivebox
 
 cd archivebox || exit
 
-# Verificar se o Python está instalado
-if ! command -v python >/dev/null 2>&1; then
-    echo "\n\n\n${RED}Python não encontrado. Instalando Python via Homebrew...${NC}"
-    brew install python
-    echo "\n\n\n${GREEN}Python instalado com sucesso.${NC}"
-    
-    # Atualiza o cache de comandos para que o shell reconheça o novo executável
-    hash -r
-    # Verifica se o comando 'python' agora está disponível
-    if ! command -v python >/dev/null 2>&1; then
-        # Caso contrário, se 'python3' existir, cria um alias para 'python'
-        if command -v python3 >/dev/null 2>&1; then
-            echo "\n\n\n${GREEN}Criando alias 'python' para 'python3'...${NC}"
-            alias python=python3
-        else
-            echo "\n\n\n${RED}Erro: Python não encontrado mesmo após a instalação. Verifique a instalação do Python.${NC}"
-            exit 1
-        fi
-    fi
-else
-    echo "\n\n\n${GREEN}Python já está instalado.${NC}"
+# Exigir que o pyenv esteja instalado para gerenciar o Python
+if ! command -v pyenv >/dev/null 2>&1; then
+    echo "\n\n\n${RED}Pyenv não encontrado. Este script requer o pyenv para gerenciar o Python.${NC}"
+    exit 1
 fi
 
-# Definir versão global do Python via pyenv, se disponível
-if command -v pyenv >/dev/null; then
-    echo "\n\n\n${GREEN}Definindo Python 3.11.5 como versão global com pyenv...${NC}"
-    pyenv install 3.11.5 --skip-existing
-    pyenv global 3.11.5
-else
-    echo "\n\n\n${RED}Pyenv não encontrado. Pule esta etapa.${NC}"
-fi
+# Configurar pyenv para utilizar Python 3.11.5
+echo "\n\n\n${GREEN}Definindo Python 3.11.5 como versão global com pyenv...${NC}"
+pyenv install 3.11.5 --skip-existing
+pyenv global 3.11.5
+# Inicializar os shims do pyenv no shell atual
+eval "$(pyenv init -)"
 
-# Criar ambiente virtual Python, se ainda não existir
+# Obter o caminho completo do Python instalado pelo pyenv
+PYTHON=$(pyenv which python)
+if [ -z "$PYTHON" ]; then
+    echo "\n\n\n${RED}Erro: Python não encontrado via pyenv.${NC}"
+    exit 1
+fi
+echo "\n\n\n${GREEN}Python configurado via pyenv: $($PYTHON --version)${NC}"
+
+# Criar ambiente virtual utilizando o Python instalado pelo pyenv
 if [ ! -d ".venv" ]; then
     echo "\n\n\n${GREEN}Criando ambiente virtual Python...${NC}"
-    python -m venv .venv
+    $PYTHON -m venv .venv
     echo "\n\n\n${GREEN}Ambiente virtual criado.${NC}"
 else
     echo "\n\n\n${RED}Ambiente virtual já existe.${NC}"
 fi
-     
+
 # Ativar ambiente virtual
 echo "\n\n\n${GREEN}Ativando o ambiente virtual...${NC}"
 source .venv/bin/activate
@@ -78,7 +67,7 @@ source .venv/bin/activate
 if ! command -v pip >/dev/null 2>&1; then
     echo "\n\n\n${RED}Pip não encontrado. Instalando pip...${NC}"
     curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-    python get-pip.py
+    $PYTHON get-pip.py
     rm get-pip.py
     echo "\n\n\n${GREEN}Pip instalado com sucesso.${NC}"
 else
@@ -98,16 +87,6 @@ pip install pymongo && echo "${GREEN}Pymongo instalado com sucesso.${NC}" || ech
 
 echo "\n\n\n${GREEN}Instalando Playwright...${NC}"
 pip install playwright && echo "${GREEN}Playwright instalado com sucesso.${NC}" || echo "${RED}Erro ao instalar Playwright.${NC}"
-
-# Criar e entrar no diretório 'get'
-if [ ! -d "get" ]; then
-    echo "\n\n\n${GREEN}Criando o diretório 'get'...${NC}"
-    mkdir get
-else
-    echo "\n\n\n${RED}Diretório 'get' já existe.${NC}"
-fi
-
-cd get || exit
 
 # Criar e entrar no diretório 'get'
 if [ ! -d "get" ]; then
