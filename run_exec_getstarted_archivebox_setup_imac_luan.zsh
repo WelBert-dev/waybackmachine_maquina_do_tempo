@@ -31,8 +31,10 @@ cd archivebox || exit
 
 # Exigir que o pyenv esteja instalado para gerenciar o Python
 if ! command -v pyenv >/dev/null 2>&1; then
-    echo "\n\n\n${RED}Pyenv não encontrado. Este script requer o pyenv para gerenciar o Python.${NC}"
-    exit 1
+    echo "\n\n\n${RED}Pyenv não encontrado. Instalando pyenv...${NC}"
+    brew install pyenv
+    echo 'eval "$(pyenv init -)"' >> ~/.zshrc
+    source ~/.zshrc
 fi
 
 # Configurar pyenv para utilizar Python 3.11.5
@@ -118,6 +120,8 @@ fi
 # Inicializar ArchiveBox, se necessário
 if [ ! -f "index.sqlite3" ]; then
     echo "\n\n\n${GREEN}Inicializando ArchiveBox...${NC}"
+    touch index.sqlite3
+    chmod 777 index.sqlite3
     archivebox init && echo "${GREEN}ArchiveBox inicializado com sucesso.${NC}" || echo "${RED}Erro ao inicializar ArchiveBox.${NC}"
 else
     echo "\n\n\n${RED}ArchiveBox já está inicializado.${NC}"
