@@ -21,7 +21,7 @@ if len(sys.argv) < 2:
 # =============================
 # Configurações e Constantes
 # =============================
-ARCHIVEBOX_DIR = "/Users/wellisonbertelli/Documents/Poder360_estagio/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
+ARCHIVEBOX_DIR = "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
 URL_LIST_FILE = sys.argv[1]  # Recebe o caminho do URL_LIST_FILE como argumento
 
 DATABASE_NAME = "archivebox_db"
@@ -29,6 +29,11 @@ COLLECTION_NAME = "arquivos_da_home_obtidos_no_wayback_machine"
 
 ARCHIVEBOX_INDEX_DB = os.path.join(ARCHIVEBOX_DIR, "index.sqlite3")
 LOG_FILE = os.path.join(ARCHIVEBOX_DIR, "archive_and_upload.log")
+
+# Verificar se o diretório existe, caso contrário, criá-lo
+log_dir = os.path.dirname(LOG_FILE)
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
 
 # Configurar o logging
 logging.basicConfig(
@@ -59,6 +64,23 @@ def conectarBanco():
 
 # Conectar ao MongoDB (o client é thread-safe)
 client = conectarBanco()
+
+def retry_with_backoff(func, max_retries=5, initial_delay=0.1):
+    retries = 0
+    while retries < max_retries:
+        try:
+            return func()
+        except Exception as e:
+            if "database is locked" in str(e).lower():
+                retries += 1
+                delay = initial_delay * (2 ** retries) + random.uniform(0, 0.1)
+                time.sleep(delay)
+            else:
+                raise e
+    raise Exception(f"Max retries ({max_retries}) exceeded for function {func.__name__}")
+
+def archive_url_with_retry(url):
+    retry_with_backoff(lambda: archive_url(url))
 
 class ArquivosDaHomeWaybackMachineModel:
     """Modelo de documento para o MongoDB."""
@@ -256,13 +278,12 @@ def main():
     # Processar as URLs em paralelo
     max_workers = 5  # Ajuste conforme necessário
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_url = {executor.submit(archive_url, url): url for url in urls_to_process}
+        future_to_url = {executor.submit(archive_url_with_retry, url): url for url in urls_to_process}
         for future in as_completed(future_to_url):
             url = future_to_url[future]
             try:
                 future.result()
             except Exception as exc:
-                # Aqui, se ocorrer erro e não for de concorrência, ele já foi logado
                 logging.error(f"Erro na execução paralela para a URL {url}: {exc}")
 
 if __name__ == "__main__":
