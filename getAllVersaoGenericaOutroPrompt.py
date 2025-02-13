@@ -74,7 +74,10 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
         wayback_url = f"https://web.archive.org/web/{timestamp}/{original_url}"
         snapshots.append(wayback_url)
 
-    logging.info(f"Foram encontradas {len(snapshots)} capturas no CDX.")
+    # Agora invertendo a lista para que o mais novo (último timestamp) apareça primeiro.
+    snapshots.reverse()
+
+    logging.info(f"Foram encontradas {len(snapshots)} capturas no CDX (ordem do mais novo p/ mais antigo).")
     return snapshots
 
 def save_urls_to_file(urls: List[str], file_path: str) -> None:
