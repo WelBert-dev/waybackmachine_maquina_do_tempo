@@ -11,6 +11,8 @@ import re
 from bson.binary import Binary
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import sqlite3
+import time
 
 # Verificar se o argumento foi fornecido
 if len(sys.argv) < 2:
@@ -62,25 +64,19 @@ def conectarBanco():
         logging.error(f"Erro ao conectar ao MongoDB: {e}")
         return None
 
-# Conectar ao MongoDB (o client é thread-safe)
-client = conectarBanco()
-
-def retry_with_backoff(func, max_retries=5, initial_delay=0.1):
-    retries = 0
-    while retries < max_retries:
-        try:
-            return func()
-        except Exception as e:
-            if "database is locked" in str(e).lower():
-                retries += 1
-                delay = initial_delay * (2 ** retries) + random.uniform(0, 0.1)
-                time.sleep(delay)
-            else:
-                raise e
-    raise Exception(f"Max retries ({max_retries}) exceeded for function {func.__name__}")
-
-def archive_url_with_retry(url):
-    retry_with_backoff(lambda: archive_url(url))
+def enable_wal_mode(db_path):
+    """
+    Habilita o modo WAL no banco de dados SQLite.
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('PRAGMA journal_mode=WAL;')
+        result = cursor.fetchone()
+        logging.info(f"Modo WAL habilitado no banco de dados: {result[0]}")
+        conn.close()
+    except Exception as e:
+        logging.error(f"Erro ao habilitar o modo WAL: {e}")
 
 class ArquivosDaHomeWaybackMachineModel:
     """Modelo de documento para o MongoDB."""
@@ -119,132 +115,162 @@ def extract_wayback_timestamp_substring(url: str) -> str:
         logging.error(f"Timestamp inválido extraído da URL: {url}")
         return None
 
-def archive_url(url):
+def archive_url(url, retries=3, delay=5):
     """
-    Arquiva uma URL usando o ArchiveBox, insere o snapshot no MongoDB, remove o snapshot e
-    registra o sucesso ou erro. Caso o erro esteja relacionado a concorrência (database locked),
-    ele será ignorado.
+    Arquiva uma URL usando o ArchiveBox, insere o snapshot no MongoDB,
+    remove o snapshot e registra o sucesso ou erro.
+    Tenta novamente em caso de erro de 'database locked' por até 'retries' vezes.
     """
     success_log = Path(ARCHIVEBOX_DIR) / "success_insertInto_mongo.txt"
     error_log = Path(ARCHIVEBOX_DIR) / "error_insertInto_mongo.txt"
 
-    try:
-        # Executar o comando ArchiveBox sem lock (concorrência pode gerar erros no SQLite)
-        result = subprocess.run(
-            ["archivebox", "add", url],
-            cwd=ARCHIVEBOX_DIR,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        logging.info(f"ArchiveBox executado com sucesso para a URL: {url}")
-        output = result.stdout
-        logging.debug(f"Saída do ArchiveBox para a URL {url}: {output}")
+    attempt = 0
+    while attempt < retries:
+        try:
 
-        # Extrair o caminho do snapshot
-        archive_path_match = ARCHIVE_PATH_REGEX.search(output)
-        if archive_path_match:
-            base_path = archive_path_match.group(1)
-            snapshot_dir = Path(ARCHIVEBOX_DIR) / "archive" / base_path
-            singlefile_html = snapshot_dir / "singlefile.html"
+            result = subprocess.run(
+                ["archivebox", "add", url],
+                cwd=ARCHIVEBOX_DIR,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            logging.info(f"ArchiveBox executado com sucesso para a URL: {url}")
+            output = result.stdout
+            logging.debug(f"Saída do ArchiveBox para a URL {url}: {output}")
 
-            if singlefile_html.exists():
-                with open(singlefile_html, "r", encoding="utf-8") as f:
-                    logging.info(f"Snapshot encontrado: {singlefile_html}")
-                    timestamp_str = extract_wayback_timestamp_substring(url)
-                    if timestamp_str is not None:
-                        dt_naive = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
-                        dt_utc = dt_naive.replace(tzinfo=timezone.utc)
-                        html_content = f.read()
+            # Extrair o caminho do snapshot
+            archive_path_match = ARCHIVE_PATH_REGEX.search(output)
+            if archive_path_match:
+                base_path = archive_path_match.group(1)
+                snapshot_dir = Path(ARCHIVEBOX_DIR) / "archive" / base_path
+                singlefile_html = snapshot_dir / "singlefile.html"
 
-                        if not html_content:
-                            error_message = f"Conteúdo HTML vazio para URL: {url}\n"
+                if singlefile_html.exists():
+                    with open(singlefile_html, "r", encoding="utf-8") as f:
+                        logging.info(f"Snapshot encontrado: {singlefile_html}")
+                        timestamp_str = extract_wayback_timestamp_substring(url)
+                        if timestamp_str is not None:
+                            dt_naive = datetime.strptime(timestamp_str, "%Y%m%d%H%M%S")
+                            dt_utc = dt_naive.replace(tzinfo=timezone.utc)
+                            html_content = f.read()
+
+                            if not html_content:
+                                error_message = f"Conteúdo HTML vazio para URL: {url}\n"
+                                logging.error(error_message)
+                                with open(error_log, 'a', encoding='utf-8') as ef:
+                                    ef.write(error_message)
+                            else:
+                                page_model = ArquivosDaHomeWaybackMachineModel(
+                                    device='--window-size=1280,720',
+                                    content=html_content,
+                                    timestamp=dt_utc,
+                                    isAdvertisingModified=False,
+                                    advertising_id_when_isModified=None
+                                )
+                                page_dict = page_model.to_dict()
+
+                                logging.debug(f"Inserindo documento no MongoDB para a URL: {url}")
+                                if not client:
+                                    error_message = f"Falha na conexão com o MongoDB para URL: {url}\n"
+                                    logging.error(error_message)
+                                    with open(error_log, 'a', encoding='utf-8') as ef:
+                                        ef.write(error_message)
+                                    return
+
+                                database = client[DATABASE_NAME]
+                                collection = database[COLLECTION_NAME]
+                                response = collection.insert_one(page_dict)
+                                logging.info(f"Documento inserido com ID: {response.inserted_id} para URL: {url}")
+
+                                # Remover o diretório do snapshot
+                                try:
+                                    shutil.rmtree(snapshot_dir)
+                                    logging.info(f"Diretório {snapshot_dir} removido com sucesso.")
+                                except Exception as rmtree_error:
+                                    error_message = f"Erro ao remover {snapshot_dir} para URL: {url} - {rmtree_error}\n"
+                                    logging.error(error_message)
+                                    with open(error_log, 'a', encoding='utf-8') as ef:
+                                        ef.write(error_message)
+
+                                # Registrar o sucesso
+                                with open(success_log, 'a', encoding='utf-8') as sf:
+                                    sf.write(f"{url}\n")
+                                logging.info(f"URL {url} registrada com sucesso.")
+                        else:
+                            error_message = f"Erro na extração do timestamp para URL: {url}\n"
                             logging.error(error_message)
                             with open(error_log, 'a', encoding='utf-8') as ef:
                                 ef.write(error_message)
-                        else:
-                            page_model = ArquivosDaHomeWaybackMachineModel(
-                                device='--window-size=1280,720',
-                                content=html_content,
-                                timestamp=dt_utc,
-                                isAdvertisingModified=False,
-                                advertising_id_when_isModified=None
-                            )
-                            page_dict = page_model.to_dict()
+                else:
+                    error_message = f"Snapshot não encontrado na saída para URL: {url}\n"
+                    logging.warning(error_message)
+                    with open(error_log, 'a', encoding='utf-8') as ef:
+                        ef.write(error_message)
 
-                            logging.debug(f"Inserindo documento no MongoDB para a URL: {url}")
-                            if not client:
-                                error_message = f"Falha na conexão com o MongoDB para URL: {url}\n"
-                                logging.error(error_message)
-                                with open(error_log, 'a', encoding='utf-8') as ef:
-                                    ef.write(error_message)
-                                return
+            # Se chegou até aqui, deu tudo certo; sair do loop
+            break
 
-                            database = client[DATABASE_NAME]
-                            collection = database[COLLECTION_NAME]
-                            response = collection.insert_one(page_dict)
-                            logging.info(f"Documento inserido com ID: {response.inserted_id} para URL: {url}")
-
-                            # Remover o diretório do snapshot
-                            try:
-                                shutil.rmtree(snapshot_dir)
-                                logging.info(f"Diretório {snapshot_dir} removido com sucesso.")
-                            except Exception as rmtree_error:
-                                error_message = f"Erro ao remover {snapshot_dir} para URL: {url} - {rmtree_error}\n"
-                                logging.error(error_message)
-                                with open(error_log, 'a', encoding='utf-8') as ef:
-                                    ef.write(error_message)
-
-                            # Registrar o sucesso
-                            with open(success_log, 'a', encoding='utf-8') as sf:
-                                sf.write(f"{url}\n")
-                            logging.info(f"URL {url} registrada com sucesso.")
-                    else:
-                        error_message = f"Erro na extração do timestamp para URL: {url}\n"
-                        logging.error(error_message)
-                        with open(error_log, 'a', encoding='utf-8') as ef:
-                            ef.write(error_message)
+        except subprocess.CalledProcessError as e:
+            if "database is locked" in e.stderr.lower():
+                attempt += 1
+                if attempt < retries:
+                    logging.warning(
+                        f"database locked para URL {url}, esperando {delay}s e tentando novamente "
+                        f"({attempt}/{retries})"
+                    )
+                    time.sleep(delay)
+                else:
+                    logging.error(
+                        f"database locked para URL {url} após {retries} tentativas. Abortando."
+                    )
+                    with open(error_log, 'a', encoding='utf-8') as ef:
+                        ef.write(f"Erro de lock após {retries} tentativas para URL: {url}\n")
             else:
-                error_message = f"Snapshot não encontrado na saída para URL: {url}\n"
-                logging.warning(error_message)
+                # Se for outro tipo de erro, registrar e sair
+                error_message = f"Erro ao arquivar {url}: {e.stderr}\n"
+                logging.error(error_message)
                 with open(error_log, 'a', encoding='utf-8') as ef:
                     ef.write(error_message)
-        else:
-            error_message = f"Regex não encontrou o caminho do snapshot para URL: {url}\n"
-            logging.warning(error_message)
-            with open(error_log, 'a', encoding='utf-8') as ef:
-                ef.write(error_message)
-    except subprocess.CalledProcessError as e:
-        # Se o erro for de concorrência, ignora-o
-        if "database is locked" in e.stderr.lower():
-            logging.warning(f"Ignorando erro de concorrência (database locked) para URL {url}: {e.stderr}")
-            return
-        else:
-            error_message = f"Erro ao arquivar {url}: {e.stderr}\n"
-            logging.error(error_message)
-            with open(error_log, 'a', encoding='utf-8') as ef:
-                ef.write(error_message)
-    except (json.JSONDecodeError, KeyError) as e:
-        error_message = f"Erro ao processar JSON ou campo ausente para URL: {url} - {e}\n"
-        logging.error(error_message)
-        with open(error_log, 'a', encoding='utf-8') as ef:
-            ef.write(error_message)
-    except Exception as ex:
-        # Se for erro de concorrência, ignora-o; caso contrário, registra o erro
-        if "database is locked" in str(ex).lower():
-            logging.warning(f"Ignorando erro de concorrência (database locked) para URL {url}: {ex}")
-            return
-        else:
-            error_message = f"Ocorreu um erro inesperado para URL: {url} - {ex}\n"
-            logging.error(error_message)
-            with open(error_log, 'a', encoding='utf-8') as ef:
-                ef.write(error_message)
+                break
+
+        except Exception as ex:
+            if "database is locked" in str(ex).lower():
+                attempt += 1
+                if attempt < retries:
+                    logging.warning(
+                        f"database locked para URL {url}, esperando {delay}s e tentando novamente "
+                        f"({attempt}/{retries})"
+                    )
+                    time.sleep(delay)
+                else:
+                    logging.error(
+                        f"database locked para URL {url} após {retries} tentativas. Abortando."
+                    )
+                    with open(error_log, 'a', encoding='utf-8') as ef:
+                        ef.write(f"Erro de lock após {retries} tentativas para URL: {url}\n")
+            else:
+                error_message = f"Ocorreu um erro inesperado para URL: {url} - {ex}\n"
+                logging.error(error_message)
+                with open(error_log, 'a', encoding='utf-8') as ef:
+                    ef.write(error_message)
+                break
 
 # =============================
 # Função Principal
 # =============================
+
+# Conectar ao MongoDB (o client é thread-safe)
+
+client = conectarBanco()
+
 def main():
     logging.info("Iniciando o processo de arquivamento...")
+
+    # Habilitar o modo WAL no banco de dados SQLite do ArchiveBox
+    enable_wal_mode(ARCHIVEBOX_INDEX_DB)
+
     urls_file_path = Path(URL_LIST_FILE)
     if not urls_file_path.exists():
         logging.error(f"Arquivo {URL_LIST_FILE} não encontrado em {ARCHIVEBOX_DIR}.")
@@ -278,12 +304,13 @@ def main():
     # Processar as URLs em paralelo
     max_workers = 5  # Ajuste conforme necessário
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_url = {executor.submit(archive_url_with_retry, url): url for url in urls_to_process}
+        future_to_url = {executor.submit(archive_url, url): url for url in urls_to_process}
         for future in as_completed(future_to_url):
             url = future_to_url[future]
             try:
                 future.result()
             except Exception as exc:
+                # Aqui, se ocorrer erro e não for de concorrência, ele já foi logado
                 logging.error(f"Erro na execução paralela para a URL {url}: {exc}")
 
 if __name__ == "__main__":
