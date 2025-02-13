@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
 import os
 import sys
 import requests
 import time
-import math
 import logging
 import subprocess
+import sqlite3
 from pathlib import Path
 from typing import List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =======================================
 # CONFIGURAÇÕES
@@ -91,6 +91,18 @@ def load_urls_from_file(file_path: str) -> List[str]:
     with open(file_path, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     return lines
+
+def enable_wal_mode(db_path):
+    """Ativa modo WAL no SQLite."""
+    try:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute("PRAGMA journal_mode = WAL;")
+        res = c.fetchone()
+        logging.info(f"WAL mode habilitado, journal_mode={res[0]}")
+        conn.close()
+    except Exception as e:
+        logging.error(f"Erro ao habilitar WAL: {e}")
 
 def archive_urls_chunk(urls_chunk: List[str]) -> None:
     """
@@ -178,17 +190,20 @@ def main():
     alvo = sys.argv[1].strip()
     logging.info(f"Iniciando coleta de capturas do Wayback Machine para: {alvo}")
 
-    # 1) Obter todos os snapshots via CDX
+    # 1) Habilitar WAL antes de começar (ajuda em gravações concorrentes)
+    enable_wal_mode(os.path.join(ARCHIVEBOX_DIR, "index.sqlite3"))
+
+    # 2) Obter todos os snapshots via CDX
     snapshots = get_wayback_snapshots(alvo)
     if not snapshots:
         logging.info("Nenhum snapshot obtido. Encerrando.")
         return
 
-    # 2) Salvar em um arquivo local (opcional, mas útil p/ referência)
+    # 3) Salvar em um arquivo local (opcional, mas útil p/ referência)
     all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"all_snapshots_{alvo.replace('/', '_')}.txt")
     save_urls_to_file(snapshots, all_urls_file)
 
-    # 3) Carregar (de volta) as URLs e filtrar as já processadas
+    # 4) Carregar (de volta) as URLs e filtrar as já processadas
     all_urls = load_urls_from_file(all_urls_file)
     if not all_urls:
         logging.info("Lista de URLs vazia após leitura.")
@@ -200,19 +215,27 @@ def main():
     else:
         already_done = set()
 
-    # Filtra as que ainda não foram adicionadas ao ArchiveBox
     to_process = [u for u in all_urls if u not in already_done]
     logging.info(f"Há {len(to_process)} URLs restantes para processar no ArchiveBox.")
-
     if not to_process:
         logging.info("Todas as URLs já foram processadas anteriormente.")
         return
 
-    # 4) Processar em chunks
-    for i in range(0, len(to_process), CHUNK_SIZE):
-        chunk = to_process[i : i + CHUNK_SIZE]
-        logging.info(f"Processando chunk com {len(chunk)} URLs (índice={i}).")
-        archive_urls_chunk(chunk)
+    # 5) Quebrar as URLs em chunks (lotes)
+    chunks = [to_process[i : i + CHUNK_SIZE] for i in range(0, len(to_process), CHUNK_SIZE)]
+    logging.info(f"Serão gerados {len(chunks)} chunks de até {CHUNK_SIZE} URLs cada.")
+
+    # 6) Processar em paralelo usando ThreadPoolExecutor
+    max_workers = 3  # Ajuste conforme sua capacidade e volume
+    logging.info(f"Processando em paralelo com max_workers={max_workers}")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(archive_urls_chunk, chunk): chunk for chunk in chunks}
+        for future in as_completed(future_map):
+            chunk = future_map[future]
+            try:
+                future.result()  # Tenta pegar o resultado; se deu erro, lança exceção
+            except Exception as e:
+                logging.error(f"Erro processando chunk {chunk}: {e}")
 
     logging.info("Processo concluído com sucesso!")
 
