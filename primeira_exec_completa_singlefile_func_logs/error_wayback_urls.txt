@@ -1,0 +1,38 @@
+Erro no subprocesso ArchiveBox: [i] [2025-02-14 07:43:12] ArchiveBox v0.7.2: archivebox add https://web.archive.org/web/20210314182331/https://poder360.com.br/
+    > /Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/get
+
+Traceback (most recent call last):
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/bin/archivebox", line 8, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/cli/__init__.py", line 140, in main
+    run_subcommand(
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/cli/__init__.py", line 80, in run_subcommand
+    module.main(args=subcommand_args, stdin=stdin, pwd=pwd)    # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/cli/archivebox_add.py", line 109, in main
+    add(
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/util.py", line 116, in typechecked_function
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/main.py", line 648, in add
+    write_main_index(links=new_links, out_dir=out_dir)
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/util.py", line 116, in typechecked_function
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/index/__init__.py", line 235, in write_main_index
+    write_sql_main_index(links, out_dir=out_dir)
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/util.py", line 116, in typechecked_function
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/index/sql.py", line 95, in write_sql_main_index
+    write_link_to_sql_index(link)
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/util.py", line 116, in typechecked_function
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/.venv/lib/python3.11/site-packages/archivebox/index/sql.py", line 54, in write_link_to_sql_index
+    snapshot.save_tags(tag_list)
+    ^^^^^^^^
+UnboundLocalError: cannot access local variable 'snapshot' where it is not associated with a value
+
+Chunk: ['https://web.archive.org/web/20210314182331/https://poder360.com.br/']
