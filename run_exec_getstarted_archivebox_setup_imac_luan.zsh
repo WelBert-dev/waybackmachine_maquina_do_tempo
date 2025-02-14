@@ -170,7 +170,7 @@ archivebox config --set SAVE_HTMLTOTEXT=False
 archivebox config --set SAVE_HEADERS=False
 archivebox config --set SAVE_DOM=False
 archivebox config --set CHROME_HEADLESS=True
-archivebox config --set TIMEOUT=180
+archivebox config --set TIMEOUT=240
 archivebox config --set CHROME_BINARY="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 echo "\n\n\n${GREEN}Configuração concluída com sucesso!${NC}"

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 from bson.binary import Binary
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sqlite3
 import time
 
@@ -31,7 +32,10 @@ COLLECTION_NAME = "arquivos_da_home_obtidos_no_wayback_machine"
 ARCHIVEBOX_INDEX_DB = os.path.join(ARCHIVEBOX_DIR, "index.sqlite3")
 LOG_FILE = os.path.join(ARCHIVEBOX_DIR, "archive_and_upload.log")
 
-# Verificar se o diretório de log existe, caso contrário, criá-lo
+# Aumente aqui, já que seu iMac tem 8 cores / 16 threads
+MAX_WORKERS = 16
+
+# Verificar se o diretório existe, caso contrário, criá-lo
 log_dir = os.path.dirname(LOG_FILE)
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
@@ -114,73 +118,36 @@ def extract_wayback_timestamp_substring(url: str) -> str:
         logging.error(f"Timestamp inválido extraído da URL: {url}")
         return None
 
-# =============================
-# Função para arquivar LOTE de URLs
-# =============================
-def archive_urls_chunk(urls_chunk, retries=3, delay=5):
+def archive_url_batch(urls, retries=3, delay=5):
     """
-    Arquiva um lote de URLs (urls_chunk) usando o ArchiveBox de uma só vez.
-    Em caso de 'database locked', tenta novamente até 'retries' vezes, com 'delay' segundos entre tentativas.
+    Arquiva uma lista de URLs usando o ArchiveBox, insere os snapshots no MongoDB,
+    remove os snapshots e registra o sucesso ou erro.
+    Tenta novamente em caso de erro de 'database locked' por até 'retries' vezes.
     """
     success_log = Path(ARCHIVEBOX_DIR) / "success_insertInto_mongo.txt"
     error_log = Path(ARCHIVEBOX_DIR) / "error_insertInto_mongo.txt"
 
-    # Precisamos mapear URL -> snapshot_dir depois do subprocess, então
-    # vamos manter um dicionário temporário. Mas a saída do ArchiveBox
-    # não diz explicitamente qual URL gerou qual snapshot,
-    # apenas na mesma ordem que são processadas.
-    #
-    # DICA: Se você usa ArchiveBox >= v0.11, pode usar `--json` no add,
-    # mas aqui vamos parsear a saída texto, assumindo que a ordem das URLs
-    # corresponde à ordem dos snapshots criados.
-
     attempt = 0
     while attempt < retries:
         try:
-            # Executa o ArchiveBox com todas as URLs do chunk
-            cmd = ["archivebox", "add"] + urls_chunk
-            result = subprocess.run(
-                cmd,
-                cwd=ARCHIVEBOX_DIR,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-
-            logging.info(f"ArchiveBox executado com sucesso para o lote de {len(urls_chunk)} URLs.")
-            output = result.stdout
-            logging.debug(f"Saída do ArchiveBox para o lote:\n{output}")
-
-            # Extrair todos os caminhos de snapshot na ordem em que aparecerem
-            # Note que cada URL resultará em 1 match (se deu certo).
-            # A suposição aqui é que a ordem dos matches coincide com a ordem das URLs passadas,
-            # pois, normalmente, o ArchiveBox processa nessa mesma sequência.
-            snapshot_dirs = ARCHIVE_PATH_REGEX.findall(output)  # lista de strings (hashes)
-            
-            if len(snapshot_dirs) != len(urls_chunk):
-                # Se o número de snapshots encontrados não bater, algo deu errado
-                error_message = (
-                    f"Número de snapshots ({len(snapshot_dirs)}) diferente do número de URLs "
-                    f"({len(urls_chunk)}) para o chunk: {urls_chunk}\n"
+            # Executa o ArchiveBox para cada URL no lote
+            for url in urls:
+                result = subprocess.run(
+                    ["archivebox", "add", url],
+                    cwd=ARCHIVEBOX_DIR,
+                    capture_output=True,
+                    text=True,
+                    check=True
                 )
-                logging.error(error_message)
-                with open(error_log, 'a', encoding='utf-8') as ef:
-                    ef.write(error_message)
-                # Ainda assim, seguimos para tentar processar o que der
-                # (ou você pode dar `return` para interromper).
-            
-            # Processar cada URL juntamente com seu snapshot (quando houver).
-            for idx, url in enumerate(urls_chunk):
-                try:
-                    # Se não houver snapshot_dir correspondente, pula
-                    if idx >= len(snapshot_dirs):
-                        error_message = f"Snapshot não encontrado para a URL: {url}\n"
-                        logging.error(error_message)
-                        with open(error_log, 'a', encoding='utf-8') as ef:
-                            ef.write(error_message)
-                        continue
+                
+                logging.info(f"ArchiveBox executado com sucesso para a URL: {url}")
+                output = result.stdout
+                logging.debug(f"Saída do ArchiveBox para a URL {url}: {output}")
 
-                    base_path = snapshot_dirs[idx]
+                # Extrair o caminho do snapshot
+                archive_path_match = ARCHIVE_PATH_REGEX.search(output)
+                if archive_path_match:
+                    base_path = archive_path_match.group(1)
                     snapshot_dir = Path(ARCHIVEBOX_DIR) / "archive" / base_path
                     singlefile_html = snapshot_dir / "singlefile.html"
 
@@ -199,7 +166,6 @@ def archive_urls_chunk(urls_chunk, retries=3, delay=5):
                                     with open(error_log, 'a', encoding='utf-8') as ef:
                                         ef.write(error_message)
                                 else:
-                                    # Monta o documento e insere no Mongo
                                     page_model = ArquivosDaHomeWaybackMachineModel(
                                         device='--window-size=1280,720',
                                         content=html_content,
@@ -209,12 +175,13 @@ def archive_urls_chunk(urls_chunk, retries=3, delay=5):
                                     )
                                     page_dict = page_model.to_dict()
 
+                                    logging.debug(f"Inserindo documento no MongoDB para a URL: {url}")
                                     if not client:
                                         error_message = f"Falha na conexão com o MongoDB para URL: {url}\n"
                                         logging.error(error_message)
                                         with open(error_log, 'a', encoding='utf-8') as ef:
                                             ef.write(error_message)
-                                        continue  # não adianta prosseguir
+                                        return
 
                                     database = client[DATABASE_NAME]
                                     collection = database[COLLECTION_NAME]
@@ -226,9 +193,7 @@ def archive_urls_chunk(urls_chunk, retries=3, delay=5):
                                         shutil.rmtree(snapshot_dir)
                                         logging.info(f"Diretório {snapshot_dir} removido com sucesso.")
                                     except Exception as rmtree_error:
-                                        error_message = (
-                                            f"Erro ao remover {snapshot_dir} para URL: {url} - {rmtree_error}\n"
-                                        )
+                                        error_message = f"Erro ao remover {snapshot_dir} para URL: {url} - {rmtree_error}\n"
                                         logging.error(error_message)
                                         with open(error_log, 'a', encoding='utf-8') as ef:
                                             ef.write(error_message)
@@ -243,39 +208,32 @@ def archive_urls_chunk(urls_chunk, retries=3, delay=5):
                                 with open(error_log, 'a', encoding='utf-8') as ef:
                                     ef.write(error_message)
                     else:
-                        error_message = f"singlefile.html não encontrado para URL: {url}\n"
-                        logging.error(error_message)
+                        error_message = f"Snapshot não encontrado na saída para URL: {url}\n"
+                        logging.warning(error_message)
                         with open(error_log, 'a', encoding='utf-8') as ef:
                             ef.write(error_message)
 
-                except Exception as e_individual:
-                    error_message = f"Erro processando URL {url} no chunk: {e_individual}\n"
-                    logging.error(error_message)
-                    with open(error_log, 'a', encoding='utf-8') as ef:
-                        ef.write(error_message)
-
-            # Se chegou até aqui, concluímos o lote com sucesso (ou com avisos).
+            # Se chegou até aqui, deu tudo certo; sair do loop
             break
 
         except subprocess.CalledProcessError as e:
-            # Verifica se o erro menciona "database is locked"
             if "database is locked" in e.stderr.lower():
                 attempt += 1
                 if attempt < retries:
                     logging.warning(
-                        f"database locked para o chunk, esperando {delay}s e tentando novamente "
+                        f"database locked para URL {url}, esperando {delay}s e tentando novamente "
                         f"({attempt}/{retries})"
                     )
                     time.sleep(delay)
                 else:
                     logging.error(
-                        f"database locked para o chunk após {retries} tentativas. Abortando."
+                        f"database locked para URL {url} após {retries} tentativas. Abortando."
                     )
                     with open(error_log, 'a', encoding='utf-8') as ef:
-                        ef.write(f"Erro de lock após {retries} tentativas para chunk: {urls_chunk}\n")
+                        ef.write(f"Erro de lock após {retries} tentativas para URL: {url}\n")
             else:
                 # Se for outro tipo de erro, registrar e sair
-                error_message = f"Erro ao arquivar chunk {urls_chunk}: {e.stderr}\n"
+                error_message = f"Erro ao arquivar {url}: {e.stderr}\n"
                 logging.error(error_message)
                 with open(error_log, 'a', encoding='utf-8') as ef:
                     ef.write(error_message)
@@ -286,18 +244,18 @@ def archive_urls_chunk(urls_chunk, retries=3, delay=5):
                 attempt += 1
                 if attempt < retries:
                     logging.warning(
-                        f"database locked para o chunk, esperando {delay}s e tentando novamente "
+                        f"database locked para URL {url}, esperando {delay}s e tentando novamente "
                         f"({attempt}/{retries})"
                     )
                     time.sleep(delay)
                 else:
                     logging.error(
-                        f"database locked para o chunk após {retries} tentativas. Abortando."
+                        f"database locked para URL {url} após {retries} tentativas. Abortando."
                     )
                     with open(error_log, 'a', encoding='utf-8') as ef:
-                        ef.write(f"Erro de lock após {retries} tentativas para chunk: {urls_chunk}\n")
+                        ef.write(f"Erro de lock após {retries} tentativas para URL: {url}\n")
             else:
-                error_message = f"Ocorreu um erro inesperado para chunk: {urls_chunk} - {ex}\n"
+                error_message = f"Ocorreu um erro inesperado para URL: {url} - {ex}\n"
                 logging.error(error_message)
                 with open(error_log, 'a', encoding='utf-8') as ef:
                     ef.write(error_message)
@@ -345,13 +303,23 @@ def main():
         logging.info("Todas as URLs já foram processadas com sucesso.")
         sys.exit(0)
 
-    logging.info(f"{len(urls_to_process)} URLs serão processadas em grupos de 10.")
+    logging.info(f"{len(urls_to_process)} URLs serão processadas.")
 
-    # Quebrar as URLs em chunks de 10
-    chunk_size = 10
-    for i in range(0, len(urls_to_process), chunk_size):
-        urls_chunk = urls_to_process[i:i+chunk_size]
-        archive_urls_chunk(urls_chunk)
+    # Agrupar as URLs em lotes de 10
+    batch_size = 10
+    url_batches = [urls_to_process[i:i + batch_size] for i in range(0, len(urls_to_process), batch_size)]
+
+    # Processar os lotes de URLs em paralelo
+    logging.info(f"Processando em paralelo com max_workers={MAX_WORKERS}")
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_batch = {executor.submit(archive_url_batch, batch): batch for batch in url_batches}
+        for future in as_completed(future_to_batch):
+            batch = future_to_batch[future]
+            try:
+                future.result()
+            except Exception as exc:
+                # Aqui, se ocorrer erro e não for de concorrência, ele já foi logado
+                logging.error(f"Erro na execução paralela para o lote de URLs: {batch}: {exc}")
 
 if __name__ == "__main__":
     main()
