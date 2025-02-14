@@ -90,8 +90,8 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
         "collapse": "digest",   # remove capturas duplicadas
         "fl": "timestamp,original", 
         "filter": "statuscode:200",  # filtra apenas capturas com HTTP 200 (opcional)
-        "from": "1996",        # ano inicial
-        "to": "2025",          # ano final (ou algo mais atual)
+        "from": "2015",        # ano inicial
+        "to": "202212",          # ano final (ou algo mais atual)
     }
 
     try:
@@ -116,7 +116,7 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
 
         # Montar a URL completa do Wayback
         # Formato: https://web.archive.org/web/<TIMESTAMP>/<ORIGINAL_URL>
-        wayback_url = f"https://web.archive.org/web/{timestamp}/{original_url}"
+        wayback_url = f"https://web.archive.org/web/{timestamp}if_/{original_url}"
         snapshots.append(wayback_url)
 
     # Agora invertendo a lista para que o mais novo (último timestamp) apareça primeiro.
@@ -374,14 +374,14 @@ def main():
     enable_wal_mode(os.path.join(ARCHIVEBOX_DIR, "index.sqlite3"))
 
     #2) Obter todos os snapshots via CDX
-    #snapshots = get_wayback_snapshots(alvo)
-    #if not snapshots:
-    #    logging.info("Nenhum snapshot obtido. Encerrando.")
-    #   return
+    snapshots = get_wayback_snapshots(alvo)
+    if not snapshots:
+        logging.info("Nenhum snapshot obtido. Encerrando.")
+        return
 
     # 3) Salvar em um arquivo local (opcional, mas útil p/ referência)
-    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"urls_list_func_singlefile.txt")
-    #save_urls_to_file(snapshots, all_urls_file)
+    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"urls_list_func_singlefile_generated.txt")
+    save_urls_to_file(snapshots, all_urls_file)
 
     # 4) Carregar (de volta) as URLs e filtrar as já processadas
     all_urls = load_urls_from_file(all_urls_file)
