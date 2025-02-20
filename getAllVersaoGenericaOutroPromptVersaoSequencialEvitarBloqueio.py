@@ -7,21 +7,18 @@ import subprocess
 import sqlite3
 from pathlib import Path
 from typing import List
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # =======================================
 # CONFIGURAÇÕES
 # =======================================
 WAYBACK_CDX_API = "http://web.archive.org/cdx/search/cdx"
 ARCHIVEBOX_DIR = "/Users/wellisonbertelli/Documents/Poder360_estagio/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
-CHUNK_SIZE = 10  # Quantas URLs por subprocess do ArchiveBox
+CHUNK_SIZE = 1  # Quantas URLs por subprocess do ArchiveBox
 RETRIES = 3      # Número de tentativas em caso de "database locked"
 DELAY = 5        # Tempo (s) de espera entre tentativas
 LOG_FILE = os.path.join(ARCHIVEBOX_DIR, "wayback_download_generica_outro_prompt.log")
 
-# Aumente aqui, já que seu iMac tem 8 cores / 16 threads, ate 16 vai, mas perde muito com lock do sql
-MAX_WORKERS = 1
-
+# Configurar o logging
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
@@ -32,23 +29,17 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
     """
     Retorna uma lista de snapshots (timestamp, original_url) da Wayback Machine
     para um determinado domínio ou URL, usando a API de CDX do Wayback.
-
-    Exemplo de uso:
-        snapshots = get_wayback_snapshots("example.com")
-        # ou
-        snapshots = get_wayback_snapshots("https://example.com/foo/bar")
     """
     logging.info(f"Consultando a API CDX para '{url_or_domain}'...")
 
-    # Parâmetros básicos para obter TODAS as capturas
     params = {
         "url": url_or_domain,
         "output": "json",
-        "collapse": "digest",   # remove capturas duplicadas
-        "fl": "timestamp,original", 
-        "filter": "statuscode:200",  # filtra apenas capturas com HTTP 200 (opcional)
-        "from": "2015",        # ano inicial
-        "to": "202212",          # ano final (ou algo mais atual)
+        "collapse": "digest",    # remove capturas duplicadas
+        "fl": "timestamp,original",
+        "filter": "statuscode:200",  # filtra apenas capturas com HTTP 200
+        "from": "2015",         # ano inicial
+        "to": "202212",         # ano final
     }
 
     try:
@@ -58,27 +49,21 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
         logging.error(f"Erro ao consultar Wayback CDX API: {e}")
         return []
 
-    data = r.json()  # O primeiro elemento costuma ser o cabeçalho se 'output=json'.
+    data = r.json()
     if not data or len(data) <= 1:
         logging.info("Nenhuma captura encontrada ou dados vazios.")
         return []
 
-    # A primeira linha é o cabeçalho (timestamp, original)
-    # As demais são os registros
     snapshots = []
     for row in data[1:]:
         if len(row) < 2:
             continue
         timestamp, original_url = row[0], row[1]
-
-        # Montar a URL completa do Wayback
-        # Formato: https://web.archive.org/web/<TIMESTAMP>/<ORIGINAL_URL>
-        wayback_url = f"https://web.archive.org/web/{timestamp}/{original_url}"
+        wayback_url = f"http://web.archive.org/web/{timestamp}if_/{original_url}"
         snapshots.append(wayback_url)
 
-    # Agora invertendo a lista para que o mais novo (último timestamp) apareça primeiro.
+    # Inverter a lista para que o mais novo apareça primeiro
     snapshots.reverse()
-
     logging.info(f"Foram encontradas {len(snapshots)} capturas no CDX (ordem do mais novo p/ mais antigo).")
     return snapshots
 
@@ -98,7 +83,7 @@ def load_urls_from_file(file_path: str) -> List[str]:
     return lines
 
 def enable_wal_mode(db_path):
-    """Ativa modo WAL no SQLite."""
+    """Ativa o modo WAL no SQLite."""
     try:
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
@@ -130,6 +115,10 @@ def archive_urls_chunk(urls_chunk: List[str]) -> None:
             )
             # Se chegou aqui, deu certo
             logging.info(f"ArchiveBox: chunk de {len(urls_chunk)} URLs adicionado com sucesso.")
+            
+            output = result.stdout
+            logging.info(f"Saída do ArchiveBox para o lote:\n{output}")
+
             # Registrar sucesso individual
             with open(success_log_path, "a", encoding="utf-8") as sf:
                 for u in urls_chunk:
@@ -195,18 +184,18 @@ def main():
     alvo = sys.argv[1].strip()
     logging.info(f"Iniciando coleta de capturas do Wayback Machine para: {alvo}")
 
-    # 1) Habilitar WAL antes de começar (ajuda em gravações concorrentes)
+    # 1) Habilitar WAL (ajuda em gravações)
     enable_wal_mode(os.path.join(ARCHIVEBOX_DIR, "index.sqlite3"))
 
-     #2) Obter todos os snapshots via CDX
-    #snapshots = get_wayback_snapshots(alvo)
-    #if not snapshots:
-    #    logging.info("Nenhum snapshot obtido. Encerrando.")
-    #    return
+    # 2) Obter todos os snapshots via CDX
+    snapshots = get_wayback_snapshots(alvo)
+    if not snapshots:
+        logging.info("Nenhum snapshot obtido. Encerrando.")
+        return
 
-    # 3) Salvar em um arquivo local (opcional, mas útil p/ referência)
-    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"urls_list_func_singlefile.txt")
-    #save_urls_to_file(snapshots, all_urls_file)
+    # 3) Salvar em um arquivo local (opcional, mas útil para referência)
+    all_urls_file = os.path.join(ARCHIVEBOX_DIR, "urls_list_func_singlefile.txt")
+    save_urls_to_file(snapshots, all_urls_file)
 
     # 4) Carregar (de volta) as URLs e filtrar as já processadas
     all_urls = load_urls_from_file(all_urls_file)
@@ -226,20 +215,13 @@ def main():
         logging.info("Todas as URLs já foram processadas anteriormente.")
         return
 
-    # 5) Quebrar as URLs em chunks (lotes)
+    # 5) Quebrar as URLs em chunks (lotes) - mesmo em modo sequencial, isso ajuda a evitar chamadas muito grandes
     chunks = [to_process[i : i + CHUNK_SIZE] for i in range(0, len(to_process), CHUNK_SIZE)]
     logging.info(f"Serão gerados {len(chunks)} chunks de até {CHUNK_SIZE} URLs cada.")
 
-    # 6) Processar em paralelo usando ThreadPoolExecutor
-    logging.info(f"Processando em paralelo com max_workers={MAX_WORKERS}")
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_map = {executor.submit(archive_urls_chunk, chunk): chunk for chunk in chunks}
-        for future in as_completed(future_map):
-            chunk = future_map[future]
-            try:
-                future.result()  # Tenta pegar o resultado; se deu erro, lança exceção
-            except Exception as e:
-                logging.error(f"Erro processando chunk {chunk}: {e}")
+    # 6) Processar sequencialmente (sem multithread)
+    for chunk in chunks:
+        archive_urls_chunk(chunk)
 
     logging.info("Processo concluído com sucesso!")
 

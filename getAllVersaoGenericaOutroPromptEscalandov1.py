@@ -19,7 +19,7 @@ import shutil
 # CONFIGURAÇÕES
 # =======================================
 WAYBACK_CDX_API = "http://web.archive.org/cdx/search/cdx"
-ARCHIVEBOX_DIR = "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
+ARCHIVEBOX_DIR = "/Users/wellisonbertelli/Documents/Poder360_estagio/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
 CHUNK_SIZE = 1  # Quantas URLs por subprocess do ArchiveBox
 RETRIES = 3      # Número de tentativas em caso de "database locked"
 DELAY = 5        # Tempo (s) de espera entre tentativas
@@ -28,7 +28,7 @@ DATABASE_NAME = "archivebox_db"
 COLLECTION_NAME = "arquivos_da_home_obtidos_no_wayback_machine"
 
 # Aumente aqui, já que seu iMac tem 8 cores / 16 threads, ate 16 vai, mas perde muito com lock do sql
-MAX_WORKERS = 4
+MAX_WORKERS = 1
 
 # Compilar a regex para extrair o caminho do snapshot (compilada uma única vez)
 ARCHIVE_PATH_REGEX = re.compile(r"> \./archive/([\w.]+)/?")
@@ -116,7 +116,7 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
 
         # Montar a URL completa do Wayback
         # Formato: https://web.archive.org/web/<TIMESTAMP>/<ORIGINAL_URL>
-        wayback_url = f"https://web.archive.org/web/{timestamp}if_/{original_url}"
+        wayback_url = f"http://web.archive.org/web/{timestamp}if_/{original_url}"
         snapshots.append(wayback_url)
 
     # Agora invertendo a lista para que o mais novo (último timestamp) apareça primeiro.
@@ -376,11 +376,11 @@ def main():
     #2) Obter todos os snapshots via CDX
     snapshots = get_wayback_snapshots(alvo)
     if not snapshots:
-        logging.info("Nenhum snapshot obtido. Encerrando.")
-        return
+       logging.info("Nenhum snapshot obtido. Encerrando.")
+       return
 
     # 3) Salvar em um arquivo local (opcional, mas útil p/ referência)
-    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"urls_list_func_singlefile_generated.txt")
+    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"urls_list_func_singlefile.txt")
     save_urls_to_file(snapshots, all_urls_file)
 
     # 4) Carregar (de volta) as URLs e filtrar as já processadas

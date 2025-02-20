@@ -13,8 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # CONFIGURAÇÕES
 # =======================================
 WAYBACK_CDX_API = "http://web.archive.org/cdx/search/cdx"
-ARCHIVEBOX_DIR = "/Users/wellisonbertelli/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
-CHUNK_SIZE = 10  # Quantas URLs por subprocess do ArchiveBox
+ARCHIVEBOX_DIR = "/Users/wellisonbertelli/Documents/Poder360_estagio/waybackmachine_maquina_do_tempo/archivebox/get"  # Substitua pelo caminho correto
+CHUNK_SIZE = 1  # Quantas URLs por subprocess do ArchiveBox
 RETRIES = 3      # Número de tentativas em caso de "database locked"
 DELAY = 5        # Tempo (s) de espera entre tentativas
 LOG_FILE = os.path.join(ARCHIVEBOX_DIR, "wayback_download_generica_outro_prompt.log")
@@ -45,8 +45,8 @@ def get_wayback_snapshots(url_or_domain: str) -> List[str]:
         "collapse": "digest",   # remove capturas duplicadas
         "fl": "timestamp,original", 
         "filter": "statuscode:200",  # filtra apenas capturas com HTTP 200 (opcional)
-        "from": "1996",        # ano inicial
-        "to": "2025",          # ano final (ou algo mais atual)
+        "from": "2015",        # ano inicial
+        "to": "202212",          # ano final (ou algo mais atual)
     }
 
     try:
@@ -196,14 +196,14 @@ def main():
     # 1) Habilitar WAL antes de começar (ajuda em gravações concorrentes)
     enable_wal_mode(os.path.join(ARCHIVEBOX_DIR, "index.sqlite3"))
 
-    # 2) Obter todos os snapshots via CDX
+    #2) Obter todos os snapshots via CDX
     snapshots = get_wayback_snapshots(alvo)
     if not snapshots:
-        logging.info("Nenhum snapshot obtido. Encerrando.")
-        return
+       logging.info("Nenhum snapshot obtido. Encerrando.")
+       return
 
     # 3) Salvar em um arquivo local (opcional, mas útil p/ referência)
-    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"all_snapshots_{alvo.replace('/', '_')}.txt")
+    all_urls_file = os.path.join(ARCHIVEBOX_DIR, f"urls_list_func_singlefile.txt")
     save_urls_to_file(snapshots, all_urls_file)
 
     # 4) Carregar (de volta) as URLs e filtrar as já processadas
